@@ -167,7 +167,11 @@ def parse_qplib_file(number):
             print(f"Could not parse term: {term}")
 
     # Since the entire quadratic term is divided by 2 in the objective, we adjust Q accordingly
-    Q = (1/2) * Q
+    # Q = (1/2) * Q
+
+    # Normalize Q to have a maximum absolute value of 1
+    Q = Q / np.max(np.abs(Q))
+
 
     # ==============================
     # Process the constraints

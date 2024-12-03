@@ -5,7 +5,7 @@ from tqdm import tqdm
 import io
 from contextlib import redirect_stderr
 
-def generate_feasible_solutions(A, E, Q, variables_info, b_vector, d, num_objectives=3000):
+def generate_feasible_solutions(A, E, Q, variables_info, b_vector, d_vector, num_objectives=3000):
     """
     Generates feasible solutions by solving quadratic programs with random positive semi-definite
     cost matrices. Then computes the cost x^T Q x for these solutions.
@@ -16,18 +16,18 @@ def generate_feasible_solutions(A, E, Q, variables_info, b_vector, d, num_object
         Q (np.ndarray): Cost matrix (n x n).
         variables_info (list): List of variable names ('x0', 'b1', etc.).
         b_vector (np.ndarray): RHS vector for inequalities (length m).
-        d (np.ndarray): RHS vector for equalities (length p).
+        d_vector (np.ndarray): RHS vector for equalities (length p).
         num_objectives (int): Number of random objective functions to set.
 
     Returns:
         tuple: (feasible_solutions, cost_values)
-            feasible_solutions: List of unique feasible solutions as numpy arrays.
+            feasible_solutions: List of feasible solutions as numpy arrays.
             cost_values: List of corresponding cost values (x^T Q x).
     """
     m, n = A.shape
     p = E.shape[0]
-    feasible_solutions = set()
-    cost_values = []
+    feasible_solutions_set = set()
+    feasible_solutions_and_costs = []
 
     import io
     from contextlib import redirect_stderr
@@ -72,7 +72,7 @@ def generate_feasible_solutions(A, E, Q, variables_info, b_vector, d, num_object
                     coeff = E[i, j]
                     if coeff != 0:
                         expr += coeff * variables[j]
-                model.addConstr(expr == d[i], name=f"eq_c_{i}")
+                model.addConstr(expr == d_vector[i], name=f"eq_c_{i}")
 
             model.update()
 
@@ -97,20 +97,24 @@ def generate_feasible_solutions(A, E, Q, variables_info, b_vector, d, num_object
                 solution = model.getAttr('X', variables)
                 solution_tuple = tuple(np.round(solution, decimals=6))  # Round to avoid floating point issues
 
-                if solution_tuple not in feasible_solutions:
-                    feasible_solutions.add(solution_tuple)
+                if solution_tuple not in feasible_solutions_set:
+                    feasible_solutions_set.add(solution_tuple)
 
                     # Compute the cost using the provided cost matrix Q
                     x_vec = np.array(solution)
                     cost = x_vec.T @ Q @ x_vec
-                    cost_values.append(cost)
+
+                    # Store the solution and cost together
+                    feasible_solutions_and_costs.append((x_vec, cost))
 
         except Exception as e:
             print(f"An error occurred for objective {obj_idx}: {e}")
             continue
 
-    # Convert set of tuples back to list of numpy arrays
-    feasible_solutions = [np.array(sol) for sol in feasible_solutions]
+    # Unpack the solutions and costs
+    feasible_solutions = [item[0] for item in feasible_solutions_and_costs]
+    cost_values = [item[1] for item in feasible_solutions_and_costs]
+
     return feasible_solutions, cost_values
 
 def generate_infeasible_solutions(A, E, variables_info, b_vector, d, Q, num_infeasible_samples, feasible_solutions):
