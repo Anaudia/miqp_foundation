@@ -2,131 +2,156 @@ import torch
 import numpy as np
 from torch_geometric.data import Data
 
-def prepare_constraint_edge_data(A, E, n, m, p):
-    """
-    Prepares edge indices and attributes from matrices A and E for constraint graphs.
-
-    Args:
-        A (np.ndarray): Inequality constraint matrix (m x n).
-        E (np.ndarray): Equality constraint matrix (p x n).
-        n (int): Number of variables.
-        m (int): Number of inequality constraints.
-        p (int): Number of equality constraints.
-
-    Returns:
-        edge_index (torch.Tensor): Edge indices for the graph.
-        edge_attr (torch.Tensor): Edge attributes (weights) for the graph.
-    """
-    # Get non-zero elements in A
-    A_row_indices, A_col_indices = np.nonzero(A)
-    A_edge_weights = A[A_row_indices, A_col_indices]
-
-    # Get non-zero elements in E
-    E_row_indices, E_col_indices = np.nonzero(E)
-    E_edge_weights = E[E_row_indices, E_col_indices]
-
-    # Edges from variable nodes to inequality constraint nodes
-    A_edge_index = torch.tensor(
-        [A_col_indices, A_row_indices + n], dtype=torch.long
-    )
-    A_edge_attr = torch.tensor(A_edge_weights, dtype=torch.float)
-
-    # Edges from variable nodes to equality constraint nodes
-    E_edge_index = torch.tensor(
-        [E_col_indices, E_row_indices + n + m], dtype=torch.long
-    )
-    E_edge_attr = torch.tensor(E_edge_weights, dtype=torch.float)
-
-    # Combine edge indices and attributes
-    edge_index = torch.cat([A_edge_index, E_edge_index], dim=1)
-    edge_attr = torch.cat([A_edge_attr, E_edge_attr], dim=0)
-
+def prepare_constraint_edge_data(A, E, n_variables):
+    # A: m x n, E: p x n
+    m = A.shape[0]
+    p = E.shape[0]
+    num_constraints = m + p
+    edge_index = []
+    edge_attr = []
+    # Edges from variables to inequality constraints
+    for constraint_idx in range(m):
+        for variable_idx in range(n_variables):
+            coeff = A[constraint_idx, variable_idx]
+            if coeff != 0:
+                # Edge from variable to constraint
+                edge_index.append([variable_idx, n_variables + constraint_idx])
+                edge_attr.append(coeff)
+    # Edges from variables to equality constraints
+    for constraint_idx in range(p):
+        for variable_idx in range(n_variables):
+            coeff = E[constraint_idx, variable_idx]
+            if coeff != 0:
+                # Edge from variable to constraint
+                edge_index.append([variable_idx, n_variables + m + constraint_idx])
+                edge_attr.append(coeff)
+    edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+    edge_attr = torch.tensor(edge_attr, dtype=torch.float)
     return edge_index, edge_attr
 
-def create_constraint_data_list(feasible_solutions, A, E, b_vector, d_vector, edge_index, edge_attr, n, m, p):
-    """
-    Creates a list of Data objects for constraint prediction.
-
-    Args:
-        feasible_solutions (list): List of feasible solutions (numpy arrays).
-        A (np.ndarray): Inequality constraint matrix (m x n).
-        E (np.ndarray): Equality constraint matrix (p x n).
-        b_vector (np.ndarray): Right-hand side vector for inequalities (length m).
-        d_vector (np.ndarray): Right-hand side vector for equalities (length p).
-        edge_index (torch.Tensor): Edge indices for the graph.
-        edge_attr (torch.Tensor): Edge attributes (weights) for the graph.
-        n (int): Number of variables.
-        m (int): Number of inequality constraints.
-        p (int): Number of equality constraints.
-
-    Returns:
-        data_list (list): List of Data objects.
-    """
+def create_data_list_feas(solutions, costs, A, E, b_vector, d_vector, edge_index, edge_attr, n_variables,
+                          variable_types_tensor, variable_lower_bounds, variable_upper_bounds):
     data_list = []
-    for x in feasible_solutions:
-        # Node features
-        variable_node_features = torch.tensor(x, dtype=torch.float).unsqueeze(1)
-        inequality_constraint_node_features = torch.tensor(b_vector, dtype=torch.float).unsqueeze(1)
-        equality_constraint_node_features = torch.tensor(d_vector, dtype=torch.float).unsqueeze(1)
-        node_features = torch.cat([
-            variable_node_features,
-            inequality_constraint_node_features,
-            equality_constraint_node_features
-        ], dim=0)
+    m = A.shape[0]
+    p = E.shape[0]
+    num_constraints = m + p
+    A_tensor = torch.tensor(A, dtype=torch.float)
+    E_tensor = torch.tensor(E, dtype=torch.float)
+    b_torch = torch.tensor(b_vector, dtype=torch.float)
+    d_torch = torch.tensor(d_vector, dtype=torch.float)
 
-        # Target y is [Ax - b; Ex - d], concatenate both
-        inequality_violation = A @ x - b_vector  # Size m
-        equality_violation = E @ x - d_vector    # Size p
-        y = np.concatenate([inequality_violation, equality_violation])
-        y = torch.tensor(y, dtype=torch.float)
+    epsilon = 1e-3  # Tolerance for checking integrality
 
-        data = Data(
-            x=node_features,
-            edge_index=edge_index,
-            edge_attr=edge_attr,
-            y=y
-        )
-        data.num_nodes = n + m + p  # Explicitly set num_nodes
+    for x_sol, cost_sol in zip(solutions, costs):
+        x_sol_tensor = torch.tensor(x_sol, dtype=torch.float)
+
+        # Variable features: [value, var_type, lb, ub]
+        var_features = torch.stack([x_sol_tensor, variable_types_tensor, variable_lower_bounds, variable_upper_bounds], dim=1)
+
+        # Constraint features: We store b and d. We pad to match var_features shape.
+        b = b_torch.unsqueeze(-1)  # m x 1
+        d = d_torch.unsqueeze(-1)  # p x 1
+        x_constraints = torch.cat([b, d], dim=0)  # (m+p) x 1
+        # Pad constraints to have the same number of feature dimensions
+        x_constraints_padded = torch.nn.functional.pad(x_constraints, (0, var_features.shape[1] - x_constraints.shape[1]))
+        x_total = torch.cat([var_features, x_constraints_padded], dim=0)
+
+        data = Data(x=x_total, edge_index=edge_index, edge_attr=edge_attr)
+        data.variable_mask = torch.zeros(data.num_nodes, dtype=torch.bool)
+        data.variable_mask[:n_variables] = True
+        data.binary_mask = variable_types_tensor.bool()
+
+        data.y_x = x_sol_tensor  # Unnormalized
+        data.y_cost = torch.tensor([cost_sol], dtype=torch.float)
+
+        # Compute constraint violations
+        inequality_violations = A_tensor @ x_sol_tensor - b_torch
+        equality_violations = E_tensor @ x_sol_tensor - d_torch
+        y_constraints = torch.cat([inequality_violations, equality_violations], dim=0)
+        data.y_constraints = y_constraints
+
+        # Compute integrality labels for binary variables
+        binary_values = x_sol_tensor[data.binary_mask]
+        y_integrality = ((binary_values - binary_values.round()).abs() < epsilon).float()
+        data.y_integrality = y_integrality
+
         data_list.append(data)
     return data_list
 
-def normalize_constraint_variable_features(data_list, n):
-    """
-    Normalizes variable node features for constraint data.
 
+
+def normalize_node_features(data_list):
+    """
+    Normalize node features for continuous variables and constraints separately.
+    
     Args:
-        data_list (list): List of Data objects.
-        n (int): Number of variable nodes.
+        data_list: List of graph data objects (torch_geometric.data.Data).
 
     Returns:
-        tuple: (data_list, mean_var, std_var)
-            data_list: List of Data objects with normalized variable node features.
-            mean_var: Mean of the variable node features.
-            std_var: Standard deviation of the variable node features.
+        Normalized data_list, means, and stds for continuous variables and constraints.
     """
-    all_variable_node_features = torch.cat([data.x[:n] for data in data_list], dim=0)
-    mean_var = all_variable_node_features.mean()
-    std_var = all_variable_node_features.std()
+    # Initialize storage for global statistics
+    means = {"continuous": None, "constraints": None}
+    stds = {"continuous": None, "constraints": None}
+
+    # Collect features for continuous variables and constraints
+    all_continuous_features = []
+    all_constraint_features = []
+
+    # Collect features across all graphs
     for data in data_list:
-        data.x[:n] = (data.x[:n] - mean_var) / std_var
-    return data_list, mean_var, std_var
+        # Extract masks
+        var_mask = data.variable_mask
+        binary_mask = data.binary_mask
 
-def normalize_constraint_targets(data_list):
-    """
-    Normalizes target y for constraint data.
+        # Continuous variables: Variables not marked as binary
+        variable_features = data.x[var_mask]
+        continuous_features = variable_features[~binary_mask]  # Exclude binary variables
 
-    Args:
-        data_list (list): List of Data objects.
+        # Constraint features: Nodes not marked as variables
+        constraint_features = data.x[~var_mask]
 
-    Returns:
-        tuple: (data_list, target_mean, target_std)
-            data_list: List of Data objects with normalized targets.
-            target_mean: Mean of the targets.
-            target_std: Standard deviation of the targets.
-    """
-    all_targets = torch.cat([data.y for data in data_list], dim=0)
-    target_mean = all_targets.mean()
-    target_std = all_targets.std()
+        # Append to global collections
+        if continuous_features.numel() > 0:  # Ensure non-empty
+            all_continuous_features.append(continuous_features)
+        if constraint_features.numel() > 0:
+            all_constraint_features.append(constraint_features)
+
+    if len(all_continuous_features) > 0:
+        all_continuous_features = torch.cat(all_continuous_features, dim=0)
+        means["continuous"] = all_continuous_features.mean(dim=0)
+        stds["continuous"] = all_continuous_features.std(dim=0) + 1e-6
+    else:
+        # If no continuous features, create dummy means/stds
+        means["continuous"] = torch.zeros(4)  # match feature dimension
+        stds["continuous"] = torch.ones(4)
+
+    if len(all_constraint_features) > 0:
+        all_constraint_features = torch.cat(all_constraint_features, dim=0)
+        means["constraints"] = all_constraint_features.mean(dim=0)
+        stds["constraints"] = all_constraint_features.std(dim=0) + 1e-6
+    else:
+        # If no constraints, create dummy means/stds
+        means["constraints"] = torch.zeros(4)
+        stds["constraints"] = torch.ones(4)
+
+    # Apply normalization to each graph
     for data in data_list:
-        data.y = (data.y - target_mean) / target_std
-    return data_list, target_mean, target_std
+        # Continuous variables
+        variable_features = data.x[data.variable_mask]
+        continuous_mask = ~data.binary_mask
+        if continuous_mask.any():
+            continuous_values = variable_features[continuous_mask]
+            variable_features[continuous_mask] = (
+                continuous_values - means["continuous"]
+            ) / stds["continuous"]
+            data.x[data.variable_mask] = variable_features
+
+        # Constraints
+        constraint_mask = ~data.variable_mask
+        if constraint_mask.any():
+            data.x[constraint_mask] = (
+                data.x[constraint_mask] - means["constraints"]
+            ) / stds["constraints"]
+
+    return data_list, means, stds
