@@ -26,9 +26,9 @@ class JointGNN(nn.Module):
             nn.Linear(decoder_hidden_channels, 1)
         )
 
-        # Decoder for constraint violation prediction
+        # **Changed**: Decoder for constraint violation prediction now also uses concat_dim
         self.decoder_constraints = nn.Sequential(
-            nn.Linear(hidden_channels_cons, decoder_hidden_channels),
+            nn.Linear(concat_dim, decoder_hidden_channels),
             nn.ReLU(),
             nn.Linear(decoder_hidden_channels, 1)
         )
@@ -42,25 +42,43 @@ class JointGNN(nn.Module):
         )
 
     def forward(self, data_obj, data_feas):
-        x_obj = self.encoder_obj(data_obj)
-        x_cons_var, x_cons_constraints = self.encoder_cons(data_feas)
-
-        x_obj_var = x_obj[data_obj.variable_mask]
-        x_var = torch.cat([x_obj_var, x_cons_var], dim=1)
-
-        x_hat = self.decoder_x(x_var).squeeze()
-
-        batch = data_obj.batch[data_obj.variable_mask]
-        x_var_pooled = global_mean_pool(x_var, batch)
-        predicted_cost = self.decoder_cost(x_var_pooled).squeeze()
-
-        predicted_constraints = self.decoder_constraints(x_cons_constraints).squeeze()
-
-        integrality_scores = self.decoder_integrality(x_var).squeeze()
+        z_obj_var = self.encoder_obj(data_obj)  # (N_obj_nodes, hidden_channels_obj)
+        z_cons_var, z_cons_constraints = self.encoder_cons(data_feas)  
+            
+        # Concatenate obj and cons var features along the feature dimension
+        z_var = torch.cat([z_obj_var, z_cons_var], dim=1)  # (num_var_nodes, hidden_channels_obj + hidden_channels_cons)
+    
+        # Pad constraints to match dimension
+        z_cons_constraints_padded = F.pad(z_cons_constraints, (0, z_var.size(1) - z_cons_constraints.size(1)))
+    
+        # Concatenate variables and constraints: (num_var_nodes + num_cons_nodes, concat_dim)
+        z_shared = torch.cat([z_var, z_cons_constraints_padded], dim=0)  
+    
+        # Split back into variable and constraint parts
+        num_var_nodes = z_var.size(0)
+        z_shared_var = z_shared[:num_var_nodes]         # (num_var_nodes, concat_dim)
+        z_shared_constraints = z_shared[num_var_nodes:] # (num_cons_nodes, concat_dim)
+    
+        # Use data_feas.batch since z_cons_var came from data_feas
+        batch = data_feas.batch[data_feas.variable_mask]
+    
+        # x reconstruction
+        x_hat = self.decoder_x(z_shared_var).squeeze()
+            
+        # Cost prediction - use the same batch indexing from data_feas
+        z_var_pooled = global_mean_pool(z_shared_var, batch)
+        predicted_cost = self.decoder_cost(z_var_pooled).squeeze()
+    
+        # Constraint violation prediction
+        predicted_constraints = self.decoder_constraints(z_shared_constraints).squeeze()
+    
+        # Integrality prediction
+        integrality_scores = self.decoder_integrality(z_shared_var).squeeze()
         binary_mask = data_obj.binary_mask[data_obj.variable_mask]
         predicted_integrality = integrality_scores[binary_mask]
-
+    
         return x_hat, predicted_cost, predicted_constraints, predicted_integrality
+
 
 
 class GNNModelObj(nn.Module):

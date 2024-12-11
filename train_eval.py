@@ -39,7 +39,7 @@ def train(train_loader, model, optimizer, criterion_mse, criterion_bce, device='
         total_recon_loss += recon_loss.item() * data_obj_batch.num_graphs
         total_cost_loss += cost_loss.item() * data_obj_batch.num_graphs
         total_constraint_loss += constraint_loss.item() * data_obj_batch.num_graphs
-        total_integrality_loss += integrality_loss.item() * data_obj_batch.num_graphs
+        total_integrality_loss += integrality_loss.item() * data_obj_batch.num_graphs        
 
     n = len(train_loader.dataset)
     return (total_loss/n, total_recon_loss/n, total_cost_loss/n, total_constraint_loss/n, total_integrality_loss/n)
@@ -61,6 +61,7 @@ def test(loader, model, criterion_mse, criterion_bce, device='cuda'):
             x_hat, predicted_cost, predicted_constraints, predicted_integrality = model(data_obj_batch, data_feas_batch)
 
             y_x = data_obj_batch.y_x
+
             y_cost = data_obj_batch.y_cost.squeeze()
             y_constraints = data_feas_batch.y_constraints
             y_integrality = data_obj_batch.y_integrality.to(device)
