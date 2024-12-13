@@ -3,10 +3,15 @@ import matplotlib.pyplot as plt
 import torch
 import numpy as np
 
+import seaborn as sns
+import matplotlib.pyplot as plt
+import torch
+import numpy as np
+
 def plot_losses(
     num_epochs,
-    train_total_losses, train_recon_losses, train_cost_losses, train_constraint_losses, train_integrality_losses,
-    test_total_losses, test_recon_losses, test_cost_losses, test_constraint_losses, test_integrality_losses
+    train_total_losses, train_recon_losses, train_cost_losses, train_constraint_losses, train_integrality_losses, train_kld_losses,
+    test_total_losses, test_recon_losses, test_cost_losses, test_constraint_losses, test_integrality_losses, test_kld_losses
 ):
     """
     Plots training and testing losses over epochs side by side in a single row.
@@ -16,26 +21,13 @@ def plot_losses(
     -----------
     num_epochs : int
         The total number of epochs trained.
-    train_total_losses : list[float]
-        Training total losses per epoch.
-    train_recon_losses : list[float]
-        Training reconstruction losses per epoch.
-    train_cost_losses : list[float]
-        Training cost losses per epoch.
-    train_constraint_losses : list[float]
-        Training constraint losses per epoch.
-    train_integrality_losses : list[float]
-        Training integrality losses per epoch.
-    test_total_losses : list[float]
-        Testing total losses per epoch (including initial test evaluation at epoch 0).
-    test_recon_losses : list[float]
-        Testing reconstruction losses per epoch.
-    test_cost_losses : list[float]
-        Testing cost losses per epoch.
-    test_constraint_losses : list[float]
-        Testing constraint losses per epoch.
-    test_integrality_losses : list[float]
-        Testing integrality losses per epoch.
+    train_*_losses : list[float]
+        Training losses per epoch for different metrics.
+    test_*_losses : list[float]
+        Testing losses per epoch for different metrics (including initial test evaluation at epoch 0).
+
+    The losses arrays must include the initial test evaluation at epoch 0 for the test_*_losses arrays.
+    The train_*_losses arrays start at epoch 1.
     """
 
     # Create epoch ranges
@@ -47,7 +39,7 @@ def plot_losses(
     sns.set_context("talk")  # Larger font size
     palette = sns.color_palette("colorblind")
 
-    fig, axs = plt.subplots(1, 5, figsize=(25, 5))
+    fig, axs = plt.subplots(1, 6, figsize=(30, 5))
 
     plot_kwargs_train = {"color": palette[0], "marker": "o", "markersize": 5, "linewidth": 2}
     plot_kwargs_test = {"color": palette[1], "marker": "s", "markersize": 5, "linewidth": 2}
@@ -102,6 +94,16 @@ def plot_losses(
     axs[4].legend()
     axs[4].grid(True, which='both', linestyle='--')
 
+    # KLD Loss
+    axs[5].plot(train_epochs, train_kld_losses, **plot_kwargs_train, label='Train KLD Loss')
+    axs[5].plot(epochs, test_kld_losses, **plot_kwargs_test, label='Test KLD Loss')
+    axs[5].set_xlabel('Epoch')
+    axs[5].set_ylabel('Loss')
+    axs[5].set_title('KLD Loss')
+    axs[5].set_yscale('log')
+    axs[5].legend()
+    axs[5].grid(True, which='both', linestyle='--')
+
     # Remove top and right spines
     for ax in axs:
         sns.despine(ax=ax, top=True, right=True, left=False, bottom=False)
@@ -112,7 +114,6 @@ def plot_losses(
     plt.savefig("losses_plot.png", dpi=300, bbox_inches='tight')
 
     plt.show()
-
 
 def plot_predictions_vs_actuals(model, test_loader, device='cuda', num_samples_to_show=1000):
     model.eval()
